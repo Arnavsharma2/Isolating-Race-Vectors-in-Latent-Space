@@ -26,15 +26,10 @@ print("Python 3.11 installed!")
 4. In the second cell, run the following code to clone the repository and install dependencies:
 
 ```python
-import os
 repo_name = "Isolating-Race-Vectors-in-Latent-Space"
 
-if os.path.isdir(repo_name):
-    %cd {repo_name}
-    !git pull
-else:
-    !git clone https://github.com/Arnavsharma2/{repo_name}.git
-    %cd {repo_name}
+!git clone https://github.com/Arnavsharma2/{repo_name}.git
+%cd {repo_name}
 
 # Install requirements 
 !pip install -r requirements.txt
