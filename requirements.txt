@@ -12,3 +12,4 @@ facenet-pytorch>=2.5.3
 mediapipe>=0.10.0
 scikit-image>=0.21.0
 ipykernel>=6.0.0
+ipython>=8.18.0

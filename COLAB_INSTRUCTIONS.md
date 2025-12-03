@@ -8,19 +8,34 @@ To run this project on Google Colab for faster GPU execution:
 3. In the first cell, run the following code to clone the repository and install dependencies:
 
 ```python
-!git clone https://github.com/Arnavsharma2/Isolating-Race-Vectors-in-Latent-Space.git
-%cd Isolating-Race-Vectors-in-Latent-Space
+import os
+repo_name = "Isolating-Race-Vectors-in-Latent-Space"
+
+if os.path.isdir(repo_name):
+    %cd {repo_name}
+    !git pull
+else:
+    !git clone https://github.com/Arnavsharma2/{repo_name}.git
+    %cd {repo_name}
+
+# Uninstall conflicting Colab packages
+!pip uninstall -y opencv-python-headless
+
+# Install requirements
 !pip install -r requirements.txt
 
+# Force reinstall packages that might be compiled against incompatible NumPy
+!pip install --force-reinstall pandas matplotlib scikit-image
+
 import sys
-sys.path.append('.')
+import os
+from pathlib import Path
+
+# Add project root to path
+current_path = Path(os.getcwd())
+if str(current_path) not in sys.path:
+    sys.path.append(str(current_path))
+print(f"Added {current_path} to path")
 ```
 
-4. **Important**: Since you have local changes (the `src` folder), you must push them to GitHub first!
-   ```bash
-   git add src requirements.txt
-   git commit -m "Add source code and requirements"
-   git push origin main
-   ```
-
-5. After setup, you can open `notebooks/01_getting_started.ipynb` in Colab or copy its contents to your Colab notebook.
+4. After setup, you can open `notebooks/01_getting_started.ipynb` in Colab or copy its contents to your Colab notebook.
