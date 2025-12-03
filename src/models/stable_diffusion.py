@@ -1,0 +1,364 @@
+"""
+Stable Diffusion wrapper with latent space access.
+
+This module provides a clean interface for:
+- Encoding images to latent space
+- Decoding latents to images
+- Generating images from prompts
+- Caching latent codes
+"""
+
+import torch
+import numpy as np
+from PIL import Image
+from typing import Optional, Tuple, List, Union
+from pathlib import Path
+from diffusers import (
+    StableDiffusionXLPipeline,
+    AutoencoderKL,
+    DDIMScheduler,
+)
+from diffusers.pipelines.stable_diffusion_xl import StableDiffusionXLPipelineOutput
+
+
+class StableDiffusionWrapper:
+    """
+    Wrapper for Stable Diffusion XL that gives us access to the latent space.
+
+    What it does:
+    - Encodes images into latents
+    - Decodes latents back into images
+    - Generates images from prompts (while letting us mess with the latents)
+    - Handles memory efficiently
+
+    Example:
+        >>> sd = StableDiffusionWrapper("cuda", dtype=torch.float16)
+        >>> image = Image.open("portrait.jpg")
+        >>> latent = sd.encode_image(image)
+        >>> reconstructed = sd.decode_latent(latent)
+    """
+
+    def __init__(
+        self,
+        device: str = "cuda",
+        dtype: torch.dtype = torch.float16,
+        model_id: str = "stabilityai/stable-diffusion-xl-base-1.0",
+        enable_xformers: bool = True,
+        enable_cpu_offload: bool = False,
+    ):
+        """
+        Sets up the Stable Diffusion pipeline.
+
+        Args:
+            device: Where to run it ('cuda' or 'cpu')
+            dtype: Precision (torch.float16 or torch.float32)
+            model_id: Which HuggingFace model to use
+            enable_xformers: Whether to use memory-efficient attention (saves VRAM)
+            enable_cpu_offload: Whether to offload models to CPU when idle
+        """
+        self.device = device
+        self.dtype = dtype
+        self.model_id = model_id
+
+        print(f"Loading Stable Diffusion XL from {model_id}...")
+
+        # Load VAE separately for encoding/decoding
+        self.vae = AutoencoderKL.from_pretrained(
+            model_id,
+            subfolder="vae",
+            torch_dtype=dtype,
+        )
+        self.vae.to(device)
+        self.vae.eval()
+
+        # Load full pipeline for generation
+        self.pipe = StableDiffusionXLPipeline.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            use_safetensors=True,
+            vae=self.vae,
+        )
+
+        # Optimizations
+        if enable_xformers and device == "cuda":
+            try:
+                self.pipe.enable_xformers_memory_efficient_attention()
+                print("✓ Enabled xformers memory-efficient attention")
+            except Exception as e:
+                print(f"⚠ Could not enable xformers: {e}")
+
+        if enable_cpu_offload:
+            self.pipe.enable_sequential_cpu_offload()
+            print("✓ Enabled CPU offloading")
+        else:
+            self.pipe.to(device)
+
+        # Use DDIM scheduler for deterministic generation
+        self.pipe.scheduler = DDIMScheduler.from_config(
+            self.pipe.scheduler.config
+        )
+
+        print("✓ Stable Diffusion loaded successfully!")
+
+    def preprocess_image(
+        self,
+        image: Union[Image.Image, np.ndarray],
+        size: Tuple[int, int] = (512, 512),
+    ) -> torch.Tensor:
+        """
+        Prepares an image for the encoder.
+
+        Args:
+            image: PIL Image or numpy array
+            size: Target size (width, height)
+
+        Returns:
+            Tensor ready for the model (1, 3, H, W) in range [-1, 1]
+        """
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+
+        # Resize
+        image = image.resize(size, Image.LANCZOS)
+
+        # Convert to tensor
+        image = np.array(image).astype(np.float32) / 255.0
+        image = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)
+
+        # Normalize to [-1, 1]
+        image = (image * 2.0) - 1.0
+
+        return image.to(self.device).to(self.dtype)
+
+    def postprocess_image(self, tensor: torch.Tensor) -> Image.Image:
+        """
+        Convert tensor to PIL Image.
+
+        Args:
+            tensor: Image tensor (1, 3, H, W) in range [-1, 1]
+
+        Returns:
+            PIL Image
+        """
+        # Denormalize from [-1, 1] to [0, 1]
+        tensor = (tensor / 2.0 + 0.5).clamp(0, 1)
+
+        # Convert to numpy
+        image = tensor.cpu().permute(0, 2, 3, 1).numpy()[0]
+        image = (image * 255).astype(np.uint8)
+
+        return Image.fromarray(image)
+
+    @torch.no_grad()
+    def encode_image(
+        self,
+        image: Union[Image.Image, np.ndarray],
+        size: Tuple[int, int] = (512, 512),
+    ) -> torch.Tensor:
+        """
+        Encode image to latent space.
+
+        Args:
+            image: Input image
+            size: Size to resize to before encoding
+
+        Returns:
+            Latent code tensor (1, 4, H//8, W//8)
+        """
+        # Preprocess
+        image_tensor = self.preprocess_image(image, size)
+
+        # Encode with VAE
+        latent_dist = self.vae.encode(image_tensor).latent_dist
+        latent = latent_dist.sample()
+
+        # Scale (SDXL uses scaling factor)
+        latent = latent * self.vae.config.scaling_factor
+
+        return latent
+
+    @torch.no_grad()
+    def decode_latent(
+        self,
+        latent: torch.Tensor,
+        return_tensor: bool = False,
+    ) -> Union[Image.Image, torch.Tensor]:
+        """
+        Decode latent code to image.
+
+        Args:
+            latent: Latent code (1, 4, H//8, W//8)
+            return_tensor: Return tensor instead of PIL Image
+
+        Returns:
+            Decoded image
+        """
+        # Unscale
+        latent = latent / self.vae.config.scaling_factor
+
+        # Decode
+        image = self.vae.decode(latent).sample
+
+        if return_tensor:
+            return image
+        else:
+            return self.postprocess_image(image)
+
+    @torch.no_grad()
+    def generate_from_prompt(
+        self,
+        prompt: str,
+        negative_prompt: str = "",
+        num_inference_steps: int = 30,
+        guidance_scale: float = 7.5,
+        seed: Optional[int] = None,
+        return_latent: bool = True,
+        **kwargs,
+    ) -> Tuple[Image.Image, Optional[torch.Tensor]]:
+        """
+        Generate image from text prompt.
+
+        Args:
+            prompt: Text prompt
+            negative_prompt: Negative prompt
+            num_inference_steps: Number of denoising steps
+            guidance_scale: Classifier-free guidance scale
+            seed: Random seed for reproducibility
+            return_latent: Also return final latent code
+            **kwargs: Additional arguments for pipeline
+
+        Returns:
+            (generated_image, latent_code) if return_latent=True
+            (generated_image, None) otherwise
+        """
+        # Set seed
+        if seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+        else:
+            generator = None
+
+        # Generate
+        output = self.pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            output_type="pil" if not return_latent else "latent",
+            **kwargs,
+        )
+
+        if return_latent:
+            # Safely extract latent from output
+            if hasattr(output, 'images'):
+                latent = output.images
+            elif isinstance(output, torch.Tensor):
+                latent = output
+            elif hasattr(output, '__getitem__'):
+                latent = output[0]
+            else:
+                raise ValueError(f"Unexpected output type from pipeline: {type(output)}")
+
+            # Decode to get image
+            image = self.decode_latent(latent)
+            return image, latent
+        else:
+            image = output.images[0]
+            return image, None
+
+    def save_latent(self, latent: torch.Tensor, path: Union[str, Path]):
+        """Save latent code to disk."""
+        torch.save(latent.cpu(), path)
+
+    def load_latent(self, path: Union[str, Path]) -> torch.Tensor:
+        """Load latent code from disk."""
+        latent = torch.load(path, map_location=self.device)
+        return latent.to(self.dtype)
+
+    def reconstruct_image(
+        self,
+        image: Union[Image.Image, np.ndarray],
+    ) -> Tuple[Image.Image, torch.Tensor]:
+        """
+        Encode and decode image (reconstruction test).
+
+        Args:
+            image: Input image
+
+        Returns:
+            (reconstructed_image, latent_code)
+        """
+        latent = self.encode_image(image)
+        reconstructed = self.decode_latent(latent)
+        return reconstructed, latent
+
+    def interpolate_latents(
+        self,
+        latent1: torch.Tensor,
+        latent2: torch.Tensor,
+        num_steps: int = 5,
+    ) -> List[Image.Image]:
+        """
+        Linear interpolation between two latent codes.
+
+        Args:
+            latent1: First latent code
+            latent2: Second latent code
+            num_steps: Number of interpolation steps
+
+        Returns:
+            List of interpolated images
+        """
+        alphas = torch.linspace(0, 1, num_steps)
+        images = []
+
+        for alpha in alphas:
+            interpolated = (1 - alpha) * latent1 + alpha * latent2
+            image = self.decode_latent(interpolated)
+            images.append(image)
+
+        return images
+
+
+class LatentCache:
+    """
+    Simple cache for latent codes to avoid re-encoding.
+
+    Example:
+        >>> cache = LatentCache("data/embeddings")
+        >>> cache.save("image_001", latent)
+        >>> latent = cache.load("image_001")
+    """
+
+    def __init__(self, cache_dir: Union[str, Path]):
+        """
+        Initialize cache.
+
+        Args:
+            cache_dir: Directory to store cached latents
+        """
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def get_path(self, image_id: str) -> Path:
+        """Get path for cached latent."""
+        return self.cache_dir / f"{image_id}.pt"
+
+    def exists(self, image_id: str) -> bool:
+        """Check if latent is cached."""
+        return self.get_path(image_id).exists()
+
+    def save(self, image_id: str, latent: torch.Tensor):
+        """Save latent to cache."""
+        path = self.get_path(image_id)
+        torch.save(latent.cpu(), path)
+
+    def load(self, image_id: str, device: str = "cuda") -> torch.Tensor:
+        """Load latent from cache."""
+        path = self.get_path(image_id)
+        return torch.load(path, map_location=device)
+
+    def clear(self):
+        """Clear all cached latents."""
+        for file in self.cache_dir.glob("*.pt"):
+            file.unlink()

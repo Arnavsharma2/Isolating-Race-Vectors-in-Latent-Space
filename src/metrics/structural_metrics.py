@@ -1,0 +1,428 @@
+"""
+Structural preservation metrics.
+
+This module implements metrics for measuring preservation of:
+- Background (SSIM on non-face regions)
+- Pose (3D head pose angles)
+- Overall structure
+"""
+
+import torch
+import numpy as np
+from PIL import Image
+from typing import Union, Dict, Tuple, Optional
+from skimage.metrics import structural_similarity as ssim
+import cv2
+
+
+class StructuralPreservationMetrics:
+    """
+    Measures preservation of pose, background, and overall structure.
+
+    Metrics:
+    - Background SSIM (on masked background)
+    - 3D head pose angles (yaw, pitch, roll)
+    - Overall structural similarity
+
+    Example:
+        >>> metrics = StructuralPreservationMetrics()
+        >>> pose_diff = metrics.pose_difference(img1, img2)
+        >>> print(f"Yaw difference: {pose_diff['yaw_diff']:.2f}°")
+    """
+
+    def __init__(self, device: str = "cuda"):
+        """
+        Initialize structural metrics.
+
+        Args:
+            device: Device to run on
+        """
+        self.device = device
+        self.face_detector = None
+        self.pose_estimator = None
+
+    def _load_face_detector(self):
+        """Load face detection model."""
+        if self.face_detector is not None:
+            return
+
+        try:
+            import mediapipe as mp
+
+            self.mp_face_detection = mp.solutions.face_detection
+            self.mp_face_mesh = mp.solutions.face_mesh
+
+            self.face_detector = self.mp_face_detection.FaceDetection(
+                min_detection_confidence=0.5
+            )
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+            )
+            print("✓ Loaded MediaPipe face detector")
+        except Exception as e:
+            print(f"⚠ Could not load MediaPipe: {e}")
+            print("  Install with: pip install mediapipe")
+            self.face_detector = None
+
+    def detect_face_bbox(
+        self,
+        img: Union[Image.Image, np.ndarray],
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Detect face bounding box.
+
+        Args:
+            img: Input image
+
+        Returns:
+            (x, y, width, height) or None if no face detected
+        """
+        self._load_face_detector()
+
+        if self.face_detector is None:
+            return None
+
+        # Convert to numpy
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+
+        # Detect face
+        results = self.face_detector.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+        if not results.detections:
+            return None
+
+        # Get first face
+        detection = results.detections[0]
+        bbox = detection.location_data.relative_bounding_box
+
+        h, w = img.shape[:2]
+        x = int(bbox.xmin * w)
+        y = int(bbox.ymin * h)
+        width = int(bbox.width * w)
+        height = int(bbox.height * h)
+
+        return (x, y, width, height)
+
+    def create_face_mask(
+        self,
+        img: Union[Image.Image, np.ndarray],
+        expand_ratio: float = 1.5,
+    ) -> np.ndarray:
+        """
+        Create binary mask of face region.
+
+        Args:
+            img: Input image
+            expand_ratio: Expand face bbox by this ratio
+
+        Returns:
+            Binary mask (1 = face, 0 = background)
+        """
+        # Convert to numpy
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+
+        bbox = self.detect_face_bbox(img)
+
+        if bbox is None:
+            # No face detected, return all zeros
+            return np.zeros(img.shape[:2], dtype=np.uint8)
+
+        # Create mask
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+        # Expand bbox
+        x, y, w, h = bbox
+        center_x = x + w // 2
+        center_y = y + h // 2
+        new_w = int(w * expand_ratio)
+        new_h = int(h * expand_ratio)
+        x = max(0, center_x - new_w // 2)
+        y = max(0, center_y - new_h // 2)
+        x2 = min(img.shape[1], x + new_w)
+        y2 = min(img.shape[0], y + new_h)
+
+        # Fill mask
+        mask[y:y2, x:x2] = 1
+
+        return mask
+
+    def background_ssim(
+        self,
+        img1: Union[Image.Image, np.ndarray],
+        img2: Union[Image.Image, np.ndarray],
+        mask: Optional[np.ndarray] = None,
+    ) -> float:
+        """
+        Compute SSIM on background region (non-face).
+
+        Args:
+            img1: First image
+            img2: Second image
+            mask: Face mask (1 = face, 0 = background). Auto-detected if None.
+
+        Returns:
+            SSIM value in [0, 1]. >0.90 is good preservation.
+        """
+        # Convert to numpy grayscale
+        def to_gray(img):
+            if isinstance(img, Image.Image):
+                img = np.array(img.convert("L"))
+            elif len(img.shape) == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            return img
+
+        img1_gray = to_gray(img1)
+        img2_gray = to_gray(img2)
+
+        # Ensure same size
+        if img1_gray.shape != img2_gray.shape:
+            img2_gray = cv2.resize(img2_gray, (img1_gray.shape[1], img1_gray.shape[0]))
+
+        # Create mask if not provided
+        if mask is None:
+            mask = self.create_face_mask(img1)
+
+        # Invert mask (we want background)
+        bg_mask = 1 - mask
+
+        # Compute SSIM on background only
+        if bg_mask.sum() == 0:
+            return 0.0  # No background
+
+        # Apply mask
+        img1_bg = img1_gray * bg_mask
+        img2_bg = img2_gray * bg_mask
+
+        # Compute SSIM
+        score = ssim(img1_bg, img2_bg, data_range=255)
+
+        return float(score)
+
+    def overall_ssim(
+        self,
+        img1: Union[Image.Image, np.ndarray],
+        img2: Union[Image.Image, np.ndarray],
+    ) -> float:
+        """
+        Compute SSIM on entire image.
+
+        Args:
+            img1: First image
+            img2: Second image
+
+        Returns:
+            SSIM value in [0, 1]
+        """
+        # Convert to numpy grayscale
+        def to_gray(img):
+            if isinstance(img, Image.Image):
+                img = np.array(img.convert("L"))
+            elif len(img.shape) == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            return img
+
+        img1_gray = to_gray(img1)
+        img2_gray = to_gray(img2)
+
+        # Ensure same size
+        if img1_gray.shape != img2_gray.shape:
+            img2_gray = cv2.resize(img2_gray, (img1_gray.shape[1], img1_gray.shape[0]))
+
+        # Compute SSIM
+        score = ssim(img1_gray, img2_gray, data_range=255)
+
+        return float(score)
+
+    def estimate_3d_pose(
+        self,
+        img: Union[Image.Image, np.ndarray],
+    ) -> Optional[Dict[str, float]]:
+        """
+        Estimate 3D head pose (yaw, pitch, roll).
+
+        Args:
+            img: Input image
+
+        Returns:
+            Dict with 'yaw', 'pitch', 'roll' in degrees, or None if failed
+        """
+        self._load_face_detector()
+
+        if self.face_mesh is None:
+            return None
+
+        # Convert to numpy
+        if isinstance(img, Image.Image):
+            img = np.array(img)
+
+        # Detect face mesh
+        results = self.face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+        if not results.multi_face_landmarks:
+            return None
+
+        # Get landmarks
+        landmarks = results.multi_face_landmarks[0]
+
+        # Estimate pose using key landmarks
+        # This is a simplified approach
+        h, w = img.shape[:2]
+
+        # Get key points (nose tip, chin, left eye, right eye, left mouth, right mouth)
+        nose = landmarks.landmark[1]
+        chin = landmarks.landmark[152]
+        left_eye = landmarks.landmark[33]
+        right_eye = landmarks.landmark[263]
+        left_mouth = landmarks.landmark[61]
+        right_mouth = landmarks.landmark[291]
+
+        # Convert to pixel coordinates
+        points_2d = np.array(
+            [
+                [nose.x * w, nose.y * h],
+                [chin.x * w, chin.y * h],
+                [left_eye.x * w, left_eye.y * h],
+                [right_eye.x * w, right_eye.y * h],
+                [left_mouth.x * w, left_mouth.y * h],
+                [right_mouth.x * w, right_mouth.y * h],
+            ],
+            dtype=np.float64,
+        )
+
+        # 3D model points
+        points_3d = np.array(
+            [
+                [0.0, 0.0, 0.0],  # Nose tip
+                [0.0, -330.0, -65.0],  # Chin
+                [-225.0, 170.0, -135.0],  # Left eye
+                [225.0, 170.0, -135.0],  # Right eye
+                [-150.0, -150.0, -125.0],  # Left mouth
+                [150.0, -150.0, -125.0],  # Right mouth
+            ],
+            dtype=np.float64,
+        )
+
+        # Camera matrix
+        focal_length = w
+        center = (w / 2, h / 2)
+        camera_matrix = np.array(
+            [[focal_length, 0, center[0]], [0, focal_length, center[1]], [0, 0, 1]],
+            dtype=np.float64,
+        )
+
+        # Distortion coefficients
+        dist_coeffs = np.zeros((4, 1))
+
+        # Solve PnP
+        success, rotation_vec, translation_vec = cv2.solvePnP(
+            points_3d, points_2d, camera_matrix, dist_coeffs
+        )
+
+        if not success:
+            return None
+
+        # Convert rotation vector to rotation matrix
+        rotation_mat, _ = cv2.Rodrigues(rotation_vec)
+
+        # Calculate Euler angles
+        sy = np.sqrt(rotation_mat[0, 0] ** 2 + rotation_mat[1, 0] ** 2)
+
+        if sy > 1e-6:
+            pitch = np.arctan2(rotation_mat[2, 1], rotation_mat[2, 2])
+            yaw = np.arctan2(-rotation_mat[2, 0], sy)
+            roll = np.arctan2(rotation_mat[1, 0], rotation_mat[0, 0])
+        else:
+            pitch = np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1])
+            yaw = np.arctan2(-rotation_mat[2, 0], sy)
+            roll = 0
+
+        # Convert to degrees
+        return {
+            "yaw": np.degrees(yaw),
+            "pitch": np.degrees(pitch),
+            "roll": np.degrees(roll),
+        }
+
+    def pose_difference(
+        self,
+        img1: Union[Image.Image, np.ndarray],
+        img2: Union[Image.Image, np.ndarray],
+    ) -> Dict[str, float]:
+        """
+        Compute difference in 3D head pose.
+
+        Args:
+            img1: First image
+            img2: Second image
+
+        Returns:
+            Dict with yaw_diff, pitch_diff, roll_diff, total_diff in degrees
+        """
+        pose1 = self.estimate_3d_pose(img1)
+        pose2 = self.estimate_3d_pose(img2)
+
+        if pose1 is None or pose2 is None:
+            return {
+                "yaw_diff": float("inf"),
+                "pitch_diff": float("inf"),
+                "roll_diff": float("inf"),
+                "total_diff": float("inf"),
+            }
+
+        yaw_diff = abs(pose1["yaw"] - pose2["yaw"])
+        pitch_diff = abs(pose1["pitch"] - pose2["pitch"])
+        roll_diff = abs(pose1["roll"] - pose2["roll"])
+        total_diff = np.sqrt(yaw_diff**2 + pitch_diff**2 + roll_diff**2)
+
+        return {
+            "yaw_diff": float(yaw_diff),
+            "pitch_diff": float(pitch_diff),
+            "roll_diff": float(roll_diff),
+            "total_diff": float(total_diff),
+        }
+
+    def compute_all_metrics(
+        self,
+        img1: Union[Image.Image, np.ndarray],
+        img2: Union[Image.Image, np.ndarray],
+    ) -> Dict[str, float]:
+        """
+        Compute all structural metrics.
+
+        Args:
+            img1: Original image
+            img2: Modified image
+
+        Returns:
+            Dictionary with all metrics
+        """
+        metrics = {}
+
+        # Background SSIM
+        try:
+            metrics["background_ssim"] = self.background_ssim(img1, img2)
+        except Exception as e:
+            print(f"⚠ Could not compute background SSIM: {e}")
+            metrics["background_ssim"] = None
+
+        # Overall SSIM
+        try:
+            metrics["overall_ssim"] = self.overall_ssim(img1, img2)
+        except Exception as e:
+            print(f"⚠ Could not compute overall SSIM: {e}")
+            metrics["overall_ssim"] = None
+
+        # Pose difference
+        try:
+            pose_diff = self.pose_difference(img1, img2)
+            metrics.update(pose_diff)
+        except Exception as e:
+            print(f"⚠ Could not compute pose difference: {e}")
+            metrics["pose_diff"] = None
+
+        return metrics
