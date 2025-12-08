@@ -231,20 +231,20 @@ class DisentanglementMetrics:
         try:
             metrics["sap"] = self.sap_score(latents, attributes)
         except Exception as e:
-            print(f"⚠ Could not compute SAP: {e}")
+            print(f"WARNING: Could not compute SAP: {e}")
             metrics["sap"] = None
 
         try:
             metrics["mig"] = self.mig_score(latents, attributes)
         except Exception as e:
-            print(f"⚠ Could not compute MIG: {e}")
+            print(f"WARNING: Could not compute MIG: {e}")
             metrics["mig"] = None
 
         try:
             dci = self.dci_score(latents, attributes)
             metrics.update(dci)
         except Exception as e:
-            print(f"⚠ Could not compute DCI: {e}")
+            print(f"WARNING: Could not compute DCI: {e}")
             metrics["disentanglement"] = None
             metrics["completeness"] = None
             metrics["informativeness"] = None

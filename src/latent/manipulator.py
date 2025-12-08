@@ -44,6 +44,28 @@ class LatentManipulator:
         """
         self.device = device
 
+    def scale_vector_magnitude(
+        self,
+        vector: torch.Tensor,
+        target_magnitude: float,
+    ) -> torch.Tensor:
+        """
+        Scale vector to a specific magnitude.
+
+        Useful when working with normalized vectors that need consistent scaling.
+
+        Args:
+            vector: Input vector
+            target_magnitude: Desired magnitude
+
+        Returns:
+            Scaled vector
+        """
+        current_magnitude = vector.norm()
+        if current_magnitude < 1e-8:
+            return vector
+        return vector * (target_magnitude / current_magnitude)
+
     def apply_vector(
         self,
         latent: torch.Tensor,
@@ -63,6 +85,51 @@ class LatentManipulator:
         Returns:
             The tweaked latent code
         """
+        # Handle shape mismatch - resize vector to match latent spatial dimensions
+        if latent.shape != vector.shape:
+            import torch.nn.functional as F
+
+            # Get spatial dimensions
+            if latent.dim() == 4 and vector.dim() == 4:
+                # Both have batch dimension
+                if latent.shape[2:] != vector.shape[2:]:
+                    # Resize vector to match latent
+                    vector = F.interpolate(
+                        vector,
+                        size=latent.shape[2:],
+                        mode='bilinear',
+                        align_corners=False
+                    )
+            elif latent.dim() == 3 and vector.dim() == 3:
+                # No batch dimension
+                if latent.shape[1:] != vector.shape[1:]:
+                    # Add batch dim, resize, remove batch dim
+                    vector = F.interpolate(
+                        vector.unsqueeze(0),
+                        size=latent.shape[1:],
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)
+            elif latent.dim() == 4 and vector.dim() == 3:
+                # Latent has batch, vector doesn't
+                if latent.shape[2:] != vector.shape[1:]:
+                    vector = F.interpolate(
+                        vector.unsqueeze(0),
+                        size=latent.shape[2:],
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)
+            elif latent.dim() == 3 and vector.dim() == 4:
+                # Vector has batch, latent doesn't
+                vector = vector.squeeze(0)
+                if latent.shape[1:] != vector.shape[1:]:
+                    vector = F.interpolate(
+                        vector.unsqueeze(0),
+                        size=latent.shape[1:],
+                        mode='bilinear',
+                        align_corners=False
+                    ).squeeze(0)
+
         return latent + alpha * vector
 
     def apply_multiple_vectors(

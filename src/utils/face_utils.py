@@ -65,7 +65,7 @@ def detect_faces(
             return bboxes
 
     except ImportError:
-        print("⚠ MediaPipe not installed. Install with: pip install mediapipe")
+        print("WARNING: MediaPipe not installed. Install with: pip install mediapipe")
         return []
 
 
@@ -241,7 +241,7 @@ def get_face_landmarks(image: np.ndarray) -> Optional[np.ndarray]:
                 break
 
         if predictor_path is None:
-            print("⚠ Landmark predictor not found. Download from:")
+            print("WARNING: Landmark predictor not found. Download from:")
             print("  http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
             print("  and place in: models/shape_predictor_68_face_landmarks.dat")
             return None
@@ -268,8 +268,8 @@ def get_face_landmarks(image: np.ndarray) -> Optional[np.ndarray]:
         return landmarks
 
     except ImportError:
-        print("⚠ dlib not installed. Install with: pip install dlib")
+        print("WARNING: dlib not installed. Install with: pip install dlib")
         return None
     except Exception as e:
-        print(f"⚠ Could not load landmark predictor: {e}")
+        print(f"WARNING: Could not load landmark predictor: {e}")
         return None

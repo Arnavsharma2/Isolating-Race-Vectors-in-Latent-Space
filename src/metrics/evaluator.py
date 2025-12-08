@@ -235,36 +235,36 @@ class CounterfactualEvaluator:
         print("EVALUATION RESULTS")
         print("=" * 60)
 
-        print("\n📊 Identity Metrics:")
+        print("\nIdentity Metrics:")
         if result.face_similarity is not None:
-            status = "✓" if result.face_similarity >= self.thresholds.face_similarity else "✗"
-            print(f"  {status} Face Similarity: {result.face_similarity:.3f} (threshold: {self.thresholds.face_similarity})")
+            # status = "PASS" if result.face_similarity >= self.thresholds.face_similarity else "FAIL"
+            print(f"  Face Similarity: {result.face_similarity:.3f} (threshold: {self.thresholds.face_similarity})")
 
         if result.landmark_rmse is not None:
-            status = "✓" if result.landmark_rmse <= self.thresholds.landmark_rmse else "✗"
-            print(f"  {status} Landmark RMSE: {result.landmark_rmse:.2f}px (threshold: {self.thresholds.landmark_rmse}px)")
+            # status = "PASS" if result.landmark_rmse <= self.thresholds.landmark_rmse else "FAIL"
+            print(f"  Landmark RMSE: {result.landmark_rmse:.2f}px (threshold: {self.thresholds.landmark_rmse}px)")
 
         if result.lpips is not None:
-            status = "✓" if result.lpips <= self.thresholds.lpips else "✗"
-            print(f"  {status} LPIPS: {result.lpips:.3f} (threshold: {self.thresholds.lpips})")
+            # status = "PASS" if result.lpips <= self.thresholds.lpips else "FAIL"
+            print(f"  LPIPS: {result.lpips:.3f} (threshold: {self.thresholds.lpips})")
 
-        print("\n🏗️  Structural Metrics:")
+        print("\nStructural Metrics:")
         if result.background_ssim is not None:
-            status = "✓" if result.background_ssim >= self.thresholds.background_ssim else "✗"
-            print(f"  {status} Background SSIM: {result.background_ssim:.3f} (threshold: {self.thresholds.background_ssim})")
+            # status = "PASS" if result.background_ssim >= self.thresholds.background_ssim else "FAIL"
+            print(f"  Background SSIM: {result.background_ssim:.3f} (threshold: {self.thresholds.background_ssim})")
 
         if result.total_pose_diff is not None:
-            status = "✓" if result.total_pose_diff <= self.thresholds.pose_angle_diff else "✗"
-            print(f"  {status} Pose Difference: {result.total_pose_diff:.2f}° (threshold: {self.thresholds.pose_angle_diff}°)")
+            # status = "PASS" if result.total_pose_diff <= self.thresholds.pose_angle_diff else "FAIL"
+            print(f"  Pose Difference: {result.total_pose_diff:.2f}° (threshold: {self.thresholds.pose_angle_diff}°)")
             if result.yaw_diff is not None:
                 print(f"     - Yaw: {result.yaw_diff:.2f}°")
                 print(f"     - Pitch: {result.pitch_diff:.2f}°")
                 print(f"     - Roll: {result.roll_diff:.2f}°")
 
-        print("\n📈 Overall Assessment:")
+        print("\nOverall Assessment:")
         print(f"  Passed: {result.pass_count}/{result.total_count} checks")
         print(f"  Overall Score: {result.overall_score:.3f}")
-        print(f"  Disentangled: {'✅ YES' if result.is_disentangled else '❌ NO'}")
+        print(f"  Disentangled: {'YES' if result.is_disentangled else 'NO'}")
         print("=" * 60 + "\n")
 
     def evaluate_batch(
@@ -345,8 +345,8 @@ class CounterfactualEvaluator:
         print("SUMMARY STATISTICS")
         print("=" * 60)
 
-        print(f"\n✨ Disentangled: {summary['pct_disentangled']:.1f}%")
-        print(f"\n📊 Average Metrics:")
+        print(f"\nDisentangled: {summary['pct_disentangled']:.1f}%")
+        print(f"\nAverage Metrics:")
         print(f"  Face Similarity: {summary.get('mean_face_similarity', 0):.3f} ± {summary.get('std_face_similarity', 0):.3f}")
         print(f"  Landmark RMSE: {summary.get('mean_landmark_rmse', 0):.2f} ± {summary.get('std_landmark_rmse', 0):.2f}px")
         print(f"  LPIPS: {summary.get('mean_lpips', 0):.3f} ± {summary.get('std_lpips', 0):.3f}")

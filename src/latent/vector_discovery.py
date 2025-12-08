@@ -43,11 +43,63 @@ class RaceVectorExtractor:
         self.method = method
         self.device = device
 
+    def create_center_mask(
+        self,
+        height: int,
+        width: int,
+        center_weight: float = 1.0,
+        edge_weight: float = 0.1,
+        falloff: str = "gaussian",
+        radius: float = 0.6,
+    ) -> torch.Tensor:
+        """
+        Create a spatial mask that focuses on the center (where faces typically are).
+
+        This helps prevent the race vector from affecting background regions.
+
+        Args:
+            height: Mask height (typically 128 for SDXL latents)
+            width: Mask width (typically 128 for SDXL latents)
+            center_weight: Weight at the center (default: 1.0)
+            edge_weight: Weight at the edges (default: 0.1 to reduce background effects)
+            falloff: 'gaussian', 'linear', or 'hard' (hard circular cutoff)
+            radius: Radius for falloff (0.0-1.0, default: 0.6)
+                   Only affects gaussian and hard modes
+
+        Returns:
+            Spatial mask tensor of shape (H, W)
+        """
+        # Create coordinate grids
+        y = torch.linspace(-1, 1, height)
+        x = torch.linspace(-1, 1, width)
+        yy, xx = torch.meshgrid(y, x, indexing='ij')
+
+        # Distance from center (normalized to 0-1.414)
+        dist = torch.sqrt(xx**2 + yy**2)
+
+        if falloff == "gaussian":
+            # Gaussian falloff with configurable radius
+            # Stronger falloff to reach edge_weight at edges
+            sigma = radius
+            mask = torch.exp(-3 * (dist / sigma)**2)
+        elif falloff == "hard":
+            # Hard circular mask - everything outside radius is edge_weight
+            mask = (dist <= radius).float()
+        else:  # linear
+            # Linear falloff
+            mask = 1 - (dist / radius).clamp(0, 1)
+
+        # Scale to desired range
+        mask = edge_weight + (center_weight - edge_weight) * mask
+
+        return mask.to(self.device)
+
     def extract_from_pairs(
         self,
         latents_a: List[torch.Tensor],
         latents_b: List[torch.Tensor],
-        normalize: bool = True,
+        normalize: bool = False,
+        spatial_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Calculates the vector by comparing pairs of images.
@@ -57,7 +109,9 @@ class RaceVectorExtractor:
         Args:
             latents_a: Latents for group A (e.g. light skin)
             latents_b: Latents for group B (e.g. dark skin)
-            normalize: Whether to make the vector unit length
+            normalize: Whether to make the vector unit length (default: False to preserve magnitude)
+            spatial_mask: Optional spatial mask to focus on specific regions (e.g., face)
+                         Shape: (H, W) with values 0-1, where 1 = full weight
 
         Returns:
             The extracted race vector
@@ -74,7 +128,16 @@ class RaceVectorExtractor:
         # Average all differences
         race_vector = torch.stack(differences).mean(dim=0)
 
-        # Normalize
+        # Apply spatial mask if provided (to focus on face regions)
+        if spatial_mask is not None:
+            # Ensure mask is on same device
+            spatial_mask = spatial_mask.to(race_vector.device)
+            # Expand mask to all channels: (C, H, W)
+            if spatial_mask.dim() == 2:
+                spatial_mask = spatial_mask.unsqueeze(0).expand_as(race_vector)
+            race_vector = race_vector * spatial_mask
+
+        # Normalize (typically we want to preserve magnitude for better control)
         if normalize:
             race_vector = race_vector / (race_vector.norm() + 1e-8)
 
@@ -263,12 +326,12 @@ class RaceVectorExtractor:
     def save_vector(self, vector: torch.Tensor, path: Path):
         """Save race vector to disk."""
         torch.save(vector.cpu(), path)
-        print(f"✓ Saved race vector to {path}")
+        print(f"Saved race vector to {path}")
 
     def load_vector(self, path: Path) -> torch.Tensor:
         """Load race vector from disk."""
         vector = torch.load(path, map_location=self.device)
-        print(f"✓ Loaded race vector from {path}")
+        print(f"Loaded race vector from {path}")
         return vector
 
 
@@ -299,6 +362,10 @@ class VectorAnalyzer:
         Returns:
             Dict with statistics per channel and spatial location
         """
+        # Remove batch dimension if present (shape: [1, C, H, W] -> [C, H, W])
+        if vector.dim() == 4:
+            vector = vector.squeeze(0)
+
         # Per-channel magnitude
         per_channel = vector.pow(2).sum(dim=(1, 2))
 

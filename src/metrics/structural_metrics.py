@@ -61,9 +61,9 @@ class StructuralPreservationMetrics:
                 refine_landmarks=True,
                 min_detection_confidence=0.5,
             )
-            print("✓ Loaded MediaPipe face detector")
+            print("Loaded MediaPipe face detector")
         except Exception as e:
-            print(f"⚠ Could not load MediaPipe: {e}")
+            print(f"WARNING: Could not load MediaPipe: {e}")
             print("  Install with: pip install mediapipe")
             self.face_detector = None
 
@@ -407,14 +407,14 @@ class StructuralPreservationMetrics:
         try:
             metrics["background_ssim"] = self.background_ssim(img1, img2)
         except Exception as e:
-            print(f"⚠ Could not compute background SSIM: {e}")
+            print(f"WARNING: Could not compute background SSIM: {e}")
             metrics["background_ssim"] = None
 
         # Overall SSIM
         try:
             metrics["overall_ssim"] = self.overall_ssim(img1, img2)
         except Exception as e:
-            print(f"⚠ Could not compute overall SSIM: {e}")
+            print(f"WARNING: Could not compute overall SSIM: {e}")
             metrics["overall_ssim"] = None
 
         # Pose difference
@@ -422,7 +422,7 @@ class StructuralPreservationMetrics:
             pose_diff = self.pose_difference(img1, img2)
             metrics.update(pose_diff)
         except Exception as e:
-            print(f"⚠ Could not compute pose difference: {e}")
+            print(f"WARNING: Could not compute pose difference: {e}")
             metrics["pose_diff"] = None
 
         return metrics

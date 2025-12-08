@@ -67,9 +67,9 @@ class IdentityPreservationMetrics:
             )
             self.face_app.prepare(ctx_id=0 if self.device == "cuda" else -1)
             self.model_type = "arcface"
-            print("✓ Loaded ArcFace model")
+            print("Loaded ArcFace model")
         except Exception as e:
-            print(f"⚠ Could not load ArcFace: {e}")
+            print(f"WARNING: Could not load ArcFace: {e}")
             print("  Install with: pip install insightface onnxruntime-gpu")
             self.face_app = None
 
@@ -87,9 +87,9 @@ class IdentityPreservationMetrics:
                 post_process=False,
             )
             self.model_type = "facenet"
-            print("✓ Loaded FaceNet model")
+            print("Loaded FaceNet model")
         except Exception as e:
-            print(f"⚠ Could not load FaceNet: {e}")
+            print(f"WARNING: Could not load FaceNet: {e}")
             print("  Install with: pip install facenet-pytorch")
             self.face_model = None
 
@@ -102,9 +102,9 @@ class IdentityPreservationMetrics:
             import lpips
 
             self.lpips_model = lpips.LPIPS(net="alex").to(self.device)
-            print("✓ Loaded LPIPS model")
+            print("Loaded LPIPS model")
         except Exception as e:
-            print(f"⚠ Could not load LPIPS: {e}")
+            print(f"WARNING: Could not load LPIPS: {e}")
             print("  Install with: pip install lpips")
             self.lpips_model = None
 
@@ -121,9 +121,9 @@ class IdentityPreservationMetrics:
 
             self.face_detector = dlib.get_frontal_face_detector()
             self.landmark_detector = dlib.shape_predictor(predictor_path)
-            print("✓ Loaded dlib landmark detector")
+            print("Loaded dlib landmark detector")
         except Exception as e:
-            print(f"⚠ Could not load dlib: {e}")
+            print(f"WARNING: Could not load dlib: {e}")
             print("  Download predictor: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
             self.landmark_detector = None
 
@@ -321,21 +321,21 @@ class IdentityPreservationMetrics:
         try:
             metrics["face_similarity"] = self.face_similarity(img1, img2)
         except Exception as e:
-            print(f"⚠ Could not compute face similarity: {e}")
+            print(f"WARNING: Could not compute face similarity: {e}")
             metrics["face_similarity"] = None
 
         # Landmark RMSE
         try:
             metrics["landmark_rmse"] = self.landmark_rmse(img1, img2)
         except Exception as e:
-            print(f"⚠ Could not compute landmark RMSE: {e}")
+            print(f"WARNING: Could not compute landmark RMSE: {e}")
             metrics["landmark_rmse"] = None
 
         # Perceptual similarity
         try:
             metrics["lpips"] = self.perceptual_similarity(img1, img2)
         except Exception as e:
-            print(f"⚠ Could not compute LPIPS: {e}")
+            print(f"WARNING: Could not compute LPIPS: {e}")
             metrics["lpips"] = None
 
         return metrics

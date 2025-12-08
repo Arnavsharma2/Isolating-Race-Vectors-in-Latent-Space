@@ -174,7 +174,7 @@ class CounterfactualGridGenerator:
                 if "landmark_rmse" in metric_dict and metric_dict["landmark_rmse"] is not None:
                     metric_lines.append(f"RMSE: {metric_dict['landmark_rmse']:.1f}px")
                 if "is_disentangled" in metric_dict:
-                    status = "✓" if metric_dict["is_disentangled"] else "✗"
+                    status = "YES" if metric_dict["is_disentangled"] else "NO"
                     metric_lines.append(f"{status} Disentangled")
 
                 # Draw metric lines
@@ -261,7 +261,7 @@ class CounterfactualGridGenerator:
             if "background_ssim" in metrics:
                 metric_lines.append(f"Background SSIM: {metrics['background_ssim']:.3f}")
             if "is_disentangled" in metrics:
-                status = "✅ Disentangled" if metrics["is_disentangled"] else "❌ Entangled"
+                status = "Disentangled" if metrics["is_disentangled"] else "Entangled"
                 metric_lines.append(status)
 
             for i, line in enumerate(metric_lines):
@@ -356,7 +356,7 @@ class CounterfactualGridGenerator:
 </head>
 <body>
     <div class="container">
-        <h1>🔄 Counterfactual Explorer</h1>
+        <h1>Counterfactual Explorer</h1>
         <p style="text-align: center; color: #888;">Subject: {subject_id}</p>
 
         <div id="image-container">
@@ -402,7 +402,7 @@ class CounterfactualGridGenerator:
         with open(html_path, "w") as f:
             f.write(html)
 
-        print(f"✓ Created interactive slider: {html_path}")
+        print(f"Created interactive slider: {html_path}")
 
         return html
 

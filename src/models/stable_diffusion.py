@@ -83,13 +83,13 @@ class StableDiffusionWrapper:
         if enable_xformers and device == "cuda":
             try:
                 self.pipe.enable_xformers_memory_efficient_attention()
-                print("✓ Enabled xformers memory-efficient attention")
+                print("Enabled xformers memory-efficient attention")
             except Exception as e:
-                print(f"⚠ Could not enable xformers: {e}")
+                print(f"WARNING: Could not enable xformers: {e}")
 
         if enable_cpu_offload:
             self.pipe.enable_sequential_cpu_offload()
-            print("✓ Enabled CPU offloading")
+            print("Enabled CPU offloading")
         else:
             self.pipe.to(device)
 
@@ -98,7 +98,7 @@ class StableDiffusionWrapper:
             self.pipe.scheduler.config
         )
 
-        print("✓ Stable Diffusion loaded successfully!")
+        print("Stable Diffusion loaded successfully.")
 
     def preprocess_image(
         self,
