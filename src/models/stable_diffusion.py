@@ -266,6 +266,87 @@ class StableDiffusionWrapper:
             image = output.images[0]
             return image, None
 
+    def generate_steered(
+        self,
+        prompt: str,
+        race_vector: torch.Tensor,
+        alpha: float,
+        seed: int,
+        negative_prompt: str = "",
+        num_inference_steps: int = 50,
+        guidance_scale: float = 7.5,
+    ) -> Tuple[Image.Image, torch.Tensor]:
+        """
+        Generate an image steered by a race vector during the denoising process.
+
+        Instead of adding the race vector to the final latent (which pushes it
+        out-of-distribution), this method injects the vector at each denoising
+        step. The diffusion process then naturally produces a coherent image in
+        the steered direction.
+
+        Args:
+            prompt: Text prompt (same as base image)
+            race_vector: The race direction vector extracted from real photos
+            alpha: Steering magnitude. Positive = darker, Negative = lighter.
+                   Values in [-5, 5] are a reasonable starting range.
+            seed: RNG seed — use the same seed as the base image for consistency
+            negative_prompt: Negative guidance prompt
+            num_inference_steps: Denoising steps (50 is standard)
+            guidance_scale: CFG scale
+
+        Returns:
+            (steered_image, final_latent)
+        """
+        import torch.nn.functional as F
+
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        # Per-step injection amount. We spread the total alpha * race_vector
+        # uniformly across all steps. At early (noisy) steps the injected delta
+        # is tiny relative to the noise magnitude so it has little effect;
+        # at late (clean) steps the latent scale matches the race vector scale
+        # and the injection meaningfully steers the color/tone. This naturally
+        # concentrates the effect where it matters.
+        alpha_per_step = alpha / num_inference_steps
+
+        def steering_callback(_pipe, _step_idx, _timestep, callback_kwargs):
+            latents = callback_kwargs["latents"]
+            rv = race_vector.to(dtype=latents.dtype, device=latents.device)
+
+            # Resize race vector if its spatial dims don't match the current latent
+            if rv.shape != latents.shape:
+                # Ensure 4-D for interpolate
+                if rv.dim() == 3:
+                    rv = rv.unsqueeze(0)
+                if rv.shape[2:] != latents.shape[2:]:
+                    rv = F.interpolate(
+                        rv,
+                        size=latents.shape[2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                # Drop batch dim if latents also has no batch dim
+                if latents.dim() == 3:
+                    rv = rv.squeeze(0)
+
+            latents = latents + alpha_per_step * rv
+            return {"latents": latents}
+
+        output = self.pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            output_type="latent",
+            callback_on_step_end=steering_callback,
+            callback_on_step_end_tensor_inputs=["latents"],
+        )
+
+        latent = output.images
+        image = self.decode_latent(latent)
+        return image, latent
+
     def save_latent(self, latent: torch.Tensor, path: Union[str, Path]):
         """Save latent code to disk."""
         torch.save(latent.cpu(), path)

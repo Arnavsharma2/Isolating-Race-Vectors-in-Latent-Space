@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.models.stable_diffusion import StableDiffusionWrapper
 from src.latent.vector_discovery import RaceVectorExtractor, VectorAnalyzer
-from src.latent.manipulator import LatentManipulator
 from src.metrics.evaluator import CounterfactualEvaluator
 from src.visualization.grid_generator import CounterfactualGridGenerator
 
@@ -184,14 +183,6 @@ class RaceVectorPipeline:
         print(f"\nRace vector extracted.")
         print(f"  Shape: {self.race_vector.shape}")
         print(f"  Norm: {self.race_vector.norm().item():.4f}\n")
-        
-        # Compute latent statistics for clipping later
-        # We need this to prevent "fog" artifacts by keeping latents in distribution
-        from src.latent.manipulator import LatentManipulator
-        temp_manipulator = LatentManipulator(device=self.device)
-        all_latents = self.light_latents + self.dark_latents
-        self.latent_stats = temp_manipulator.compute_latent_statistics(all_latents)
-        print("Computed latent statistics for valid range clipping.")
 
         # Save visualization
         self.visualize_mask_and_vector(spatial_mask)
@@ -216,7 +207,6 @@ class RaceVectorPipeline:
                 
             def differentiable_identity_loss(latents_batch, modified_latents_batch):
                 """Compute identity loss (cosine distance) in a differentiable way."""
-                print("D", end="", flush=True) # Debug: Decoding
                 loss_sum = 0
                 for orig, mod in zip(latents_batch, modified_latents_batch):
                     # Decode (unsqueezing to add batch dim if needed)
@@ -247,20 +237,20 @@ class RaceVectorPipeline:
                 diff = torch.stack(modified_latents_batch) - torch.stack(latents_batch)
                 return diff.norm(p=2)
 
-            print("  Optimizing vector... (this may take a minute)")
-            
+            print("  Optimizing vector... (this may take a few minutes)")
+
             # Use a subset of latents for optimization to save time/memory
-            train_latents = self.light_latents[:1] + self.dark_latents[:1]
-            
+            train_latents = self.light_latents[:3] + self.dark_latents[:3]
+
             self.race_vector = self.extractor.optimize_vector(
                 initial_vector=self.race_vector,
                 latents=train_latents,
                 identity_loss_fn=differentiable_identity_loss,
                 attribute_change_fn=attribute_change_loss,
-                num_iterations=2, # DEBUG: Just 2 steps to see if it moves
-                lr=0.05,
-                lambda_identity=1.0, 
-                lambda_attribute=0.1 
+                num_iterations=50,
+                lr=0.01,
+                lambda_identity=0.7,
+                lambda_attribute=0.3,
             )
             
             print(f"Optimized Vector Norm: {self.race_vector.norm().item():.4f}")
@@ -304,26 +294,27 @@ class RaceVectorPipeline:
         print(f"Saved visualization: {mask_path}")
 
     def generate_base_image(self, prompt=None, seed=999):
-        """Generate or use a base image for counterfactuals"""
+        """Generate base image and save the prompt/seed for counterfactual steering."""
         print("STEP 5: Generating base image...")
         print("-" * 70)
-        
+
+        if prompt is None:
+            prompt = "portrait photo of a person, professional headshot, neutral background, high quality"
+
+        # Store for reuse during steered counterfactual generation
+        self.generation_prompt = prompt
+        self.generation_seed = seed
+        self.generation_negative_prompt = "multiple people, accessories, jewelry, glasses"
+
         cache_path = self.cache_dir / "base_image.png"
-        
+
         # Check cache first
         if cache_path.exists():
             print(f"Found cached base image: {cache_path}")
             print("  Loading from cache (skipping generation)...")
             try:
                 self.base_image = Image.open(cache_path).convert("RGB")
-                # Ensure correct size
                 self.base_image = self.base_image.resize((512, 512), Image.LANCZOS)
-                
-                # Encode to latent
-                print("  Encoding cached image...")
-                self.base_latent = self.model.encode_image(self.base_image)
-                
-                # Save a copy to the current experiment result folder for completeness
                 base_path = self.output_dir / "base_image.png"
                 self.base_image.save(base_path)
                 print(f"Base image loaded and copied to: {base_path}\n")
@@ -332,89 +323,72 @@ class RaceVectorPipeline:
                 print(f"WARNING: Failed to load cache: {e}")
                 print("  Falling back to generation...")
 
-        if prompt is None:
-            prompt = "portrait photo of a person, professional headshot, neutral background, high quality"
-
         print(f"Prompt: {prompt}")
         print(f"Seed: {seed}")
 
-        self.base_image, self.base_latent = self.model.generate_from_prompt(
+        self.base_image, _ = self.model.generate_from_prompt(
             prompt,
-            negative_prompt="multiple people, accessories, jewelry, glasses",
+            negative_prompt=self.generation_negative_prompt,
             seed=seed,
             num_inference_steps=50,
             guidance_scale=7.5,
         )
 
-        # Save base image to cache and output
         print(f"  Saving to cache: {cache_path}")
         self.base_image.save(cache_path)
-        
+
         base_path = self.output_dir / "base_image.png"
         self.base_image.save(base_path)
         print(f"Base image saved: {base_path}\n")
 
     def generate_counterfactuals(self, alphas=None):
-        """Generate counterfactuals at different alpha values"""
-        print("STEP 6: Generating counterfactuals...")
+        """
+        Generate counterfactuals using steered denoising.
+
+        Each counterfactual is generated fresh from the same seed as the base
+        image, but with the race vector injected at every denoising step.
+        This keeps the generation in-distribution (no "misty" VAE artifacts)
+        while still moving along the race direction in latent space.
+
+        Alpha tuning guide:
+          - Start with the defaults below and widen if the effect is too subtle.
+          - Values beyond ±6 often produce identity-breaking changes.
+        """
+        print("STEP 6: Generating counterfactuals (steered denoising)...")
         print("-" * 70)
 
         if alphas is None:
-            alphas = [-0.8, -0.4, 0.0, 0.4, 0.8]
+            alphas = [-4, -2, 0, 2, 4]
 
         print(f"Alpha values: {alphas}")
         print("(Negative = lighter skin, Positive = darker skin)")
+        print("Using same seed as base image for consistent identity.\n")
 
-        self.manipulator = LatentManipulator(device=self.device)
         self.alphas = alphas
-
-        # Generate counterfactuals with clipping
         self.counterfactual_images = []
-        counterfactual_latents = [] # Initialize list for latents
-
-        print("  Generating images (with range constraint)...")
-        
-        # Resize stats if dimensions don't match (e.g. 512px inputs vs 1024px generation)
-        target_size = self.base_latent.shape[-2:]
-        if self.latent_stats['mean'].shape[-2:] != target_size:
-            print(f"  Resizing stats from {self.latent_stats['mean'].shape[-2:]} to {target_size}")
-            import torch.nn.functional as F
-            for key in self.latent_stats:
-                # Add batch dim -> interpolate -> remove batch dim
-                self.latent_stats[key] = F.interpolate(
-                    self.latent_stats[key].unsqueeze(0),
-                    size=target_size,
-                    mode='bilinear',
-                    align_corners=False
-                ).squeeze(0)
 
         for alpha in alphas:
-            # Apply vector
-            modified_latent = self.manipulator.apply_vector(
-                self.base_latent,
-                self.race_vector,
-                alpha
+            print(f"  Generating α = {alpha:+.1f}...", end=" ", flush=True)
+
+            if abs(alpha) < 0.01:
+                # α=0 is the unsteered base image — just re-use it
+                self.counterfactual_images.append(self.base_image)
+                print("(base image, skipped)")
+                continue
+
+            img, _ = self.model.generate_steered(
+                prompt=self.generation_prompt,
+                race_vector=self.race_vector,
+                alpha=alpha,
+                seed=self.generation_seed,
+                negative_prompt=self.generation_negative_prompt,
+                num_inference_steps=50,
+                guidance_scale=7.5,
             )
-            
-            # Clip to valid range to prevent "fog" artifacts
-            # We use the stats from the real photos to ensure realism
-            # RELAXED: num_std 3.0 -> 5.0 to prevent "green" graying out of dark skin
-            modified_latent = self.manipulator.clip_to_valid_range(
-                modified_latent,
-                self.latent_stats,
-                num_std=5.0  # allow deviations up to 5 sigmas
-            )
-            
-            counterfactual_latents.append(modified_latent)
-        
-        # Decode to images
-        for lat in counterfactual_latents:
-            img = self.model.decode_latent(lat)
             self.counterfactual_images.append(img)
+            print("done")
 
-        print(f"Generated {len(self.counterfactual_images)} counterfactuals\n")
-
-        # Visualize
+        print(f"\nGenerated {len(self.counterfactual_images)} counterfactuals\n")
         self.visualize_counterfactuals()
 
     def visualize_counterfactuals(self):
@@ -522,8 +496,8 @@ def main():
         # Step 5: Generate base image
         pipeline.generate_base_image()
 
-        # Step 6: Generate counterfactuals
-        pipeline.generate_counterfactuals(alphas=[-0.8, -0.4, 0.0, 0.4, 0.8])
+        # Step 6: Generate counterfactuals (steered denoising, default alphas [-4,-2,0,2,4])
+        pipeline.generate_counterfactuals()
 
         # Step 7: Evaluate
         pipeline.evaluate_counterfactuals()
